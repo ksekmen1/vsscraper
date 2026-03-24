@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+jinja2
+python-multipart
+playwright==1.55.0
+greenlet==3.1.1
