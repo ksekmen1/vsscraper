@@ -45,9 +45,74 @@ def accept_cookies_if_present(page: Page) -> None:
                 if by_role.count() > 0 and by_role.is_visible():
                     by_role.click(timeout=2500, force=True)
                     page.wait_for_timeout(800)
+                    print(f"Cookie accepted via button text: {text}", flush=True)
                     return
             except Exception:
                 continue
+
+        # Fallback: some consent UIs don't expose a good accessible name.
+        # Click the first visible button whose text is exactly "Accept" or "Accept all".
+        try:
+            buttons = frame.locator("button")
+            for i in range(min(buttons.count(), 30)):
+                b = buttons.nth(i)
+                if not b.is_visible():
+                    continue
+                try:
+                    label = (b.inner_text() or "").strip()
+                except Exception:
+                    continue
+                if label in ("Accept", "Accept all", "Accept All"):
+                    b.click(timeout=2500, force=True)
+                    page.wait_for_timeout(800)
+                    print(f"Cookie accepted via fallback button scan: {label}", flush=True)
+                    return
+        except Exception:
+            pass
+
+        # Fallback: sometimes it's rendered as a non-button element.
+        try:
+            accept_text = frame.get_by_text("Accept", exact=True).first
+            if accept_text.count() > 0 and accept_text.is_visible():
+                accept_text.click(timeout=2500, force=True)
+                page.wait_for_timeout(800)
+                print("Cookie accepted via fallback text click: Accept", flush=True)
+                return
+        except Exception:
+            pass
+
+
+def _click_button_text_any_frame(page: Page, button_texts: List[str]) -> bool:
+    for frame in page.frames:
+        for text in button_texts:
+            try:
+                btn = frame.get_by_role("button", name=text, exact=True).first
+                if btn.count() > 0 and btn.is_visible():
+                    btn.click(timeout=2500, force=True)
+                    page.wait_for_timeout(800)
+                    return True
+            except Exception:
+                continue
+    return False
+
+
+def handle_country_modal_if_present(page: Page) -> None:
+    # Vestiaire sometimes shows a "country you are shopping from" modal.
+    continue_texts = [
+        "Continue",
+        "Continue shopping",
+        "Continue to site",
+    ]
+    _click_button_text_any_frame(page, continue_texts)
+
+
+def handle_popups(page: Page) -> None:
+    # Order matters: country modal first, cookies after (often delayed).
+    for delay_ms in (0, 1500, 3500, 6000):
+        if delay_ms:
+            page.wait_for_timeout(delay_ms)
+        handle_country_modal_if_present(page)
+        accept_cookies_if_present(page)
 
 
 def wait_and_accept_cookies(page: Page) -> None:
@@ -141,12 +206,33 @@ def apply_filters(page: Page, designer: Optional[str], condition: Optional[str])
         status["condition"] = _select_option(page, condition)
         _click_apply_if_present(page)
 
+    # Close any open filter panel/drawer that might block scrolling.
+    try:
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(300)
+    except Exception:
+        pass
+
     return status
 
 
 def _extract_price(text: str) -> str:
-    match = re.search(r"(?:EUR|€|\\$|£)\\s?\\d[\\d,\\. ]*", text)
-    return match.group(0).strip() if match else ""
+    t = (text or "").replace("\n", " ")
+
+    # Pattern A: currency before number (e.g. "€ 120", "USD 120")
+    m = re.search(
+        r"(?:(?:EUR|USD|GBP|DKK|SEK|NOK|CHF|PLN)|[€$£])\s*\d[\d.,\u00A0 ]*",
+        t,
+    )
+    if m:
+        return m.group(0).strip()
+
+    # Pattern B: number before currency (e.g. "1.284 DKK")
+    m = re.search(
+        r"\d[\d.,\u00A0 ]*\s*(?:EUR|USD|GBP|DKK|SEK|NOK|CHF|PLN)",
+        t,
+    )
+    return m.group(0).strip() if m else ""
 
 
 def _first_non_empty(*values: Optional[str]) -> str:
@@ -156,12 +242,35 @@ def _first_non_empty(*values: Optional[str]) -> str:
     return ""
 
 
-def collect_items_from_current_page(page: Page, seen_urls: Set[str], per_page_item_limit: int) -> List[Dict[str, str]]:
+def _normalize_image_url(value: str) -> str:
+    v = (value or "").strip()
+    if not v:
+        return ""
+
+    # If it's a srcset string, take the first URL candidate.
+    # Example: "https://... 300w, https://... 600w" -> "https://..."
+    # Important: Vestiaire image URLs themselves contain commas, but srcset candidates
+    # are separated by ", " (comma + space). Only split on that.
+    first = v.split(", ")[0].strip() if ", " in v else v
+    first = first.split()[0].strip()  # drop "1x", "300w", etc.
+
+    if first.startswith("//"):
+        first = f"https:{first}"
+    if first.startswith("/"):
+        first = f"{BASE_URL}{first}"
+    return first
+
+
+def collect_items_from_current_page(
+    page: Page, seen_urls: Set[str], per_page_item_limit: int, debug_images: bool = False
+) -> List[Dict[str, str]]:
     cards = page.locator("a[href*='/women-bags/']")
     count = cards.count()
     items: List[Dict[str, str]] = []
 
     for idx in range(min(count, per_page_item_limit)):
+        if idx > 0 and idx % 25 == 0:
+            print(f"Collecting items... {idx}/{min(count, per_page_item_limit)}", flush=True)
         try:
             card = cards.nth(idx)
             href = card.get_attribute("href")
@@ -172,17 +281,17 @@ def collect_items_from_current_page(page: Page, seen_urls: Set[str], per_page_it
                 continue
 
             image = card.locator("img").first
-            image_url = _first_non_empty(
-                image.get_attribute("src"),
-                image.get_attribute("data-src"),
-                image.get_attribute("srcset"),
-            )
-            if "," in image_url:
-                image_url = image_url.split(",")[0].split(" ")[0].strip()
-            if image_url.startswith("//"):
-                image_url = f"https:{image_url}"
-            if image_url.startswith("/"):
-                image_url = f"{BASE_URL}{image_url}"
+            raw_src = image.get_attribute("src")
+            raw_data_src = image.get_attribute("data-src")
+            raw_srcset = image.get_attribute("srcset")
+            raw_data_srcset = image.get_attribute("data-srcset")
+            raw_image = _first_non_empty(raw_src, raw_data_src, raw_srcset, raw_data_srcset)
+            image_url = _normalize_image_url(raw_image)
+            if debug_images and idx < 5:
+                print(
+                    f"IMG[{idx}] src={raw_src} data-src={raw_data_src} srcset={raw_srcset} data-srcset={raw_data_srcset} -> {image_url}",
+                    flush=True,
+                )
 
             raw_text = card.inner_text().strip().replace("\\n", " ")
             title = raw_text[:220]
@@ -214,34 +323,50 @@ def scrape(
     condition: str = "",
     max_pages: int = 3,
     scroll_rounds: int = 6,
-    per_page_item_limit: int = 200,
+    per_page_item_limit: int = 60,
     headless: bool = False,
+    debug_images: bool = False,
 ) -> List[Dict[str, str]]:
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=headless)
         page = browser.new_page()
+        page.set_default_timeout(15000)
         results: List[Dict[str, str]] = []
         seen_urls: Set[str] = set()
 
         for page_num in range(1, max_pages + 1):
             page_url = URL if page_num == 1 else f"{URL}?page={page_num}"
-            print(f"Opening {page_url}")
-            page.goto(page_url, wait_until="domcontentloaded")
-            wait_and_accept_cookies(page)
+            print(f"Opening {page_url}", flush=True)
+            page.goto(page_url, wait_until="domcontentloaded", timeout=45000)
+            handle_popups(page)
 
             if "Just a moment" in page.title():
-                print("Bot check detected. Solve it in browser and press Enter in terminal.")
+                print("Bot check detected. Solve it in browser and press Enter in terminal.", flush=True)
                 input()
-                wait_and_accept_cookies(page)
+                handle_popups(page)
 
             status = apply_filters(page, designer=designer, condition=condition)
-            print(f"Filters applied: {status}")
+            print(f"Filters applied: {status}", flush=True)
 
-            page.wait_for_load_state("networkidle")
-            page.wait_for_timeout(1500)
+            # Don't use networkidle here; Vestiaire often keeps requests open.
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=20000)
+            except Exception:
+                pass
+
+            # Wait until some product links exist before scrolling/collecting.
+            try:
+                page.wait_for_selector("a[href*='/women-bags/']", timeout=20000)
+            except Exception:
+                print("Warning: product links not detected yet; continuing anyway.", flush=True)
+
             scroll_to_load_more(page, rounds=scroll_rounds)
-            results.extend(collect_items_from_current_page(page, seen_urls, per_page_item_limit))
-            print(f"Collected {len(results)} items total")
+            results.extend(
+                collect_items_from_current_page(
+                    page, seen_urls, per_page_item_limit, debug_images=debug_images
+                )
+            )
+            print(f"Collected {len(results)} items total", flush=True)
 
         browser.close()
         return results

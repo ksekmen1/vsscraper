@@ -21,7 +21,7 @@ def index(request: Request) -> HTMLResponse:
             "form": {
                 "designer": "Balenciaga",
                 "condition": "Very good condition",
-                "max_pages": 3,
+                "max_pages": 1,
                 "scroll_rounds": 6,
             },
         },
@@ -33,10 +33,9 @@ def run_scraper(
     request: Request,
     designer: str = Form("Balenciaga"),
     condition: str = Form("Very good condition"),
-    max_pages: int = Form(3),
     scroll_rounds: int = Form(6),
 ) -> HTMLResponse:
-    safe_max_pages = max(1, min(max_pages, 10))
+    safe_max_pages = 1
     safe_scroll_rounds = max(1, min(scroll_rounds, 20))
 
     results: List[Dict[str, str]] = scrape(
@@ -44,6 +43,7 @@ def run_scraper(
         condition=condition.strip(),
         max_pages=safe_max_pages,
         scroll_rounds=safe_scroll_rounds,
+        per_page_item_limit=60,
         headless=False,
     )
     save_to_csv(results, "items.csv")
