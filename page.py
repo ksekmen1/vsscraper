@@ -374,7 +374,14 @@ def scrape(
 
 def save_to_csv(items: List[Dict[str, str]], output_path: str = "items.csv") -> None:
     with open(output_path, "w", newline="", encoding="utf-8") as file:
-        writer = csv.DictWriter(file, fieldnames=["title", "price", "url", "image_url"])
+        # Keep a stable schema for the MVP CSV export.
+        # If new fields are added to the in-memory items (e.g. comps/suggestions),
+        # ignore them instead of crashing the web request.
+        writer = csv.DictWriter(
+            file,
+            fieldnames=["title", "price", "url", "image_url"],
+            extrasaction="ignore",
+        )
         writer.writeheader()
         writer.writerows(items)
 

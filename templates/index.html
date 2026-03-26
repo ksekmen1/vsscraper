@@ -60,6 +60,23 @@
                     <div class="card-body">
                         <div><strong>{{ item.title }}</strong></div>
                         <div class="price">{{ item.price or "No price found" }}</div>
+                        {% if item.suggested_list_dkk or item.suggested_quick_dkk %}
+                            <div style="margin:8px 0; padding:8px; background:#f9fafb; border:1px solid #e5e7eb; border-radius:8px;">
+                                <div><strong>Suggested (DKK)</strong></div>
+                                <div>List: {{ item.suggested_list_dkk or "-" }}</div>
+                                <div>Quick: {{ item.suggested_quick_dkk or "-" }}</div>
+                                <div class="small">
+                                    eBay comps: {{ item.ebay_comp_count or "0" }}
+                                    {% if item.ebay_comp_median_dkk %}
+                                        · median {{ item.ebay_comp_median_dkk }}
+                                    {% endif %}
+                                </div>
+                            </div>
+                        {% else %}
+                            {% if item.comp_note %}
+                                <div class="small">{{ item.comp_note }}</div>
+                            {% endif %}
+                        {% endif %}
                         <a href="{{ item.url }}" target="_blank" rel="noreferrer">Open listing</a>
                     </div>
                 </div>

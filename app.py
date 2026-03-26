@@ -4,6 +4,7 @@ from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
+from comps import enrich_with_ebay_sold_comps
 from page import save_to_csv, scrape
 
 app = FastAPI(title="Vestiaire Scraper MVP")
@@ -45,6 +46,13 @@ def run_scraper(
         scroll_rounds=safe_scroll_rounds,
         per_page_item_limit=60,
         headless=False,
+    )
+
+    enrich_with_ebay_sold_comps(
+        results,
+        brand=designer.strip() or "Balenciaga",
+        target_currency="DKK",
+        per_item_limit=12,
     )
     save_to_csv(results, "items.csv")
 
